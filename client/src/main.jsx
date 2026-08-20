@@ -7,59 +7,27 @@ function App(){const[u,setU]=useState(undefined);useEffect(()=>{profile().then(s
 function Shell({user}){const[page,setPage]=useState('dashboard');useEffect(()=>{if('Notification'in window&&Notification.permission==='default')Notification.requestPermission()},[]);async function logout(){await supabase.auth.signOut()}const nav=user.role==='vendedor'?[['dashboard','Dashboard',LayoutDashboard],['new','Nova cotação',Plus],['quotes','Minhas cotações',ClipboardList]]:user.role==='compras'?[['dashboard','Dashboard',LayoutDashboard],['quotes','Cotações',ClipboardList],['orders','Pedidos',PackageCheck],['sales','Vendas',CheckCircle2]]:[['dashboard','Dashboard',LayoutDashboard],['quotes','Todas as cotações',ClipboardList],['sales','Vendas',CheckCircle2],['users','Usuários',Users]];return <div className="app"><aside><div className="brand"><span className="logo">CF</span><b>CotaFácil</b></div><nav>{nav.map(([id,t,I])=><button className={page===id?'active':''} onClick={()=>setPage(id)} key={id}><I size={18}/>{t}</button>)}</nav><button className="logout" onClick={logout}><LogOut size={17}/> Sair</button></aside><main><header><div><small>{user.role.toUpperCase()}</small><h2>{nav.find(n=>n[0]===page)?.[1]}</h2></div><Notifications user={user}/></header>{page==='dashboard'&&<Dashboard user={user}/>} {page==='new'&&<NewQuote go={()=>setPage('quotes')} user={user}/>} {['quotes','orders','sales'].includes(page)&&<Quotes user={user} mode={page}/>} {page==='users'&&<UsersPage/>}</main></div>}
 function Notifications({user}){
 const[n,setN]=useState([]),[open,setOpen]=useState(false);
-const key=`cf_notifications_${user.id}`;
-const seenKey=`cf_seen_quotes_${user.id}`;
-const load=()=>{try{setN(JSON.parse(localStorage.getItem(key)||'[]'))}catch{setN([])}};
+const load=async()=>{
+  const{data,error}=await supabase.from('notifications').select('*').eq('user_id',user.id).order('created_at',{ascending:false}).limit(30);
+  if(!error)setN(data||[]);
+};
 useEffect(()=>{
+  let mounted=true;
   load();
-  const ev=()=>load();
-  window.addEventListener('cf-notify',ev);
-  let first=true;
-  let previous={};
-  try{previous=JSON.parse(localStorage.getItem(seenKey)||'{}')}catch{previous={}}
-  async function check(){
-    let query=supabase.from('quotes').select('id,seller_id,status,code,brand,created_at').order('created_at',{ascending:false});
-    if(user.role==='vendedor')query=query.eq('seller_id',user.id);
-    const{data,error}=await query;
-    if(error)return;
-    const current={};
-    (data||[]).forEach(q=>current[q.id]={status:q.status,created_at:q.created_at});
-    if(first && Object.keys(previous).length===0){localStorage.setItem(seenKey,JSON.stringify(current));previous=current;first=false;return}
-    for(const q of(data||[])){
-      const old=previous[q.id];
-      if(!old){
-        if(user.role!=='vendedor'){
-          pushNoticeFor(user.id,'Nova cotação','Uma nova cotação foi enviada para Compras.');
-          popup('Nova cotação','Uma nova cotação foi enviada para Compras.');
-        }
-      }else if(old.status!==q.status){
-        if(user.role==='vendedor'&&eventText[q.status]){
-          pushNoticeFor(user.id,'Cotação atualizada',eventText[q.status]);
-          popup('CotaFácil',eventText[q.status]);
-        }else if(user.role!=='vendedor'&&q.status==='PEDIDO'){
-          pushNoticeFor(user.id,'Pedido confirmado','Um vendedor confirmou o pedido de uma peça.');
-          popup('Pedido confirmado','Pedido confirmado');
-        }
-      }
-    }
-    localStorage.setItem(seenKey,JSON.stringify(current));
-    previous=current;
-    first=false;
-    load();
-  }
-  function pushNoticeFor(uid,title,message){
-    const storageKey=`cf_notifications_${uid}`;
-    let a=[];try{a=JSON.parse(localStorage.getItem(storageKey)||'[]')}catch{}
-    a.unshift({id:crypto.randomUUID(),title,message,read:false,at:new Date().toISOString()});
-    localStorage.setItem(storageKey,JSON.stringify(a.slice(0,50)));
-    if(uid===user.id)window.dispatchEvent(new Event('cf-notify'));
-  }
-  check();
-  const timer=setInterval(check,5000);
-  return()=>{window.removeEventListener('cf-notify',ev);clearInterval(timer)}
-},[user.id,user.role]);
+  const channel=supabase.channel('notifications-'+user.id).on('postgres_changes',{event:'INSERT',schema:'public',table:'notifications',filter:'user_id=eq.'+user.id},payload=>{
+    if(!mounted)return;
+    const item=payload.new;
+    setN(a=>a.some(x=>x.id===item.id)?a:[item,...a].slice(0,30));
+    popup(item.title,item.message);
+  }).subscribe();
+  const timer=setInterval(load,5000);
+  const ev=()=>load();window.addEventListener('cf-notify',ev);
+  return()=>{mounted=false;clearInterval(timer);window.removeEventListener('cf-notify',ev);supabase.removeChannel(channel)};
+},[user.id]);
 const unread=n.filter(x=>!x.read).length;
-return <div style={{position:'relative'}}><button className="bell" onClick={()=>setOpen(!open)}><Bell size={20}/>{unread>0&&<i>{unread>9?'9+':unread}</i>}</button>{open&&<div className="notifPanel">{n.length===0?<p>Nenhuma notificação.</p>:n.slice(0,10).map(x=><div className={x.read?'notif read':'notif'} key={x.id}><b>{x.title}</b><span>{x.message}</span><small>{new Date(x.at).toLocaleString('pt-BR')}</small></div>)}<button className="ghost" onClick={()=>{const a=n.map(x=>({...x,read:true}));localStorage.setItem(key,JSON.stringify(a));setN(a)}}>Marcar como lidas</button></div>}</div>
+async function markRead(id){await supabase.from('notifications').update({read:true}).eq('id',id).eq('user_id',user.id);setN(a=>a.map(x=>x.id===id?{...x,read:true}:x))}
+async function markAll(){await supabase.from('notifications').update({read:true}).eq('user_id',user.id).eq('read',false);setN(a=>a.map(x=>({...x,read:true})))}
+return <div style={{position:'relative'}}><button className="bell" onClick={()=>setOpen(!open)}><Bell size={20}/>{unread>0&&<i>{unread>9?'9+':unread}</i>}</button>{open&&<div className="notifPanel">{n.length===0?<p>Nenhuma notificação.</p>:n.slice(0,10).map(x=><button className={x.read?'notif read':'notif'} key={x.id} onClick={()=>!x.read&&markRead(x.id)}><b>{x.title}</b><span>{x.message}</span><small>{new Date(x.created_at).toLocaleString('pt-BR')}</small></button>)}{unread>0&&<button className="ghost" onClick={markAll}>Marcar todas como lidas</button>}</div>}</div>
 }
 function Dashboard({user}){const[rows,setRows]=useState([]),[from,setFrom]=useState(''),[to,setTo]=useState('');async function load(){let q=supabase.from('quotes').select('*,profiles(name)').order('created_at',{ascending:false});if(user.role==='vendedor')q=q.eq('seller_id',user.id);if(from)q=q.gte('created_at',from+'T00:00:00');if(to)q=q.lte('created_at',to+'T23:59:59');const{data,error}=await q;if(error)return alert(error.message);setRows(data||[])}useEffect(()=>{load();const c=supabase.channel('dashboard-live').on('postgres_changes',{event:'*',schema:'public',table:'quotes'},load).subscribe();return()=>supabase.removeChannel(c)},[user.id,from,to]);const metrics=useMemo(()=>{const total=rows.length,sold=rows.filter(x=>x.status==='VENDIDA'),orders=rows.filter(x=>['PEDIDO','VENDIDA','NAO_VENDIDA'].includes(x.status));const rate=total?Math.round(sold.length/total*100):0;const value=sold.reduce((a,x)=>a+saleValue(x),0);const map={};rows.forEach(x=>{const n=x.profiles?.name||'Vendedor';map[n]??={name:n,quotes:0,sales:0,value:0};map[n].quotes++;if(x.status==='VENDIDA'){map[n].sales++;map[n].value+=saleValue(x)}});return{total,sold,orders,rate,value,ranking:Object.values(map).sort((a,b)=>b.value-a.value)}},[rows]);if(user.role==='vendedor')return <section><div className="hero"><div><span>Olá, {user.name} 👋</span><h1>Suas cotações organizadas.</h1><p>Crie uma cotação e acompanhe até a venda.</p></div></div><Cards items={[[metrics.total,'Minhas cotações'],[rows.filter(x=>x.status==='AGUARDANDO_COTACAO').length,'Aguardando'],[rows.filter(x=>x.status==='AGUARDANDO_DECISAO').length,'Cotadas'],[metrics.sold.length,'Vendidas']]}/></section>;return <section><div className="hero"><div><span>Visão geral</span><h1>Dashboard do chefe.</h1><p>Acompanhe o desempenho das vendas casadas.</p></div></div><div className="filter panel"><CalendarDays size={18}/><label>De<input type="date" value={from} onChange={x=>setFrom(x.target.value)}/></label><label>Até<input type="date" value={to} onChange={x=>setTo(x.target.value)}/></label><button className="ghost" onClick={()=>{setFrom('');setTo('')}}>Limpar</button></div><Cards items={[[metrics.total,'Cotações'],[metrics.orders.length,'Pedidos'],[metrics.sold.length,'Vendas'],[metrics.rate+'%','Conversão em venda'],[money(metrics.value),'Valor vendido']]}/><div className="panel"><div className="panelhead"><h3>🏆 Ranking de vendedores</h3><small>Ordenado por valor vendido</small></div><table><thead><tr><th>#</th><th>Vendedor</th><th>Cotações</th><th>Vendas</th><th>Conversão</th><th>Valor vendido</th></tr></thead><tbody>{metrics.ranking.map((x,i)=><tr key={x.name}><td><b>{i+1}º</b></td><td>{x.name}</td><td>{x.quotes}</td><td>{x.sales}</td><td>{x.quotes?Math.round(x.sales/x.quotes*100):0}%</td><td><b>{money(x.value)}</b></td></tr>)}</tbody></table>{!metrics.ranking.length&&<div className="empty">Nenhum dado no período selecionado.</div>}</div></section>}
 function Cards({items}){return <div className="cards">{items.map(([v,t])=><div className="card" key={t}><small>{t}</small><strong>{v}</strong></div>)}</div>}
