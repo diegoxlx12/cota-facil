@@ -1,0 +1,102 @@
+name: Fix CotaFacil notifications
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Replace notification system
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          p=Path('client/src/main.jsx')
+          s=p.read_text()
+          start=s.index('function Notifications(')
+          end=s.index('function Dashboard(', start)
+          new=r'''function Notifications({user}){
+          const[n,setN]=useState([]),[open,setOpen]=useState(false);
+          const key=`cf_notifications_${user.id}`;
+          const seenKey=`cf_seen_quotes_${user.id}`;
+          const load=()=>{try{setN(JSON.parse(localStorage.getItem(key)||'[]'))}catch{setN([])}};
+          useEffect(()=>{
+            load();
+            const ev=()=>load();
+            window.addEventListener('cf-notify',ev);
+            let first=true;
+            let previous={};
+            try{previous=JSON.parse(localStorage.getItem(seenKey)||'{}')}catch{previous={}}
+            async function check(){
+              let query=supabase.from('quotes').select('id,seller_id,status,code,brand,created_at').order('created_at',{ascending:false});
+              if(user.role==='vendedor')query=query.eq('seller_id',user.id);
+              const{data,error}=await query;
+              if(error)return;
+              const current={};
+              (data||[]).forEach(q=>current[q.id]={status:q.status,created_at:q.created_at});
+              if(first && Object.keys(previous).length===0){localStorage.setItem(seenKey,JSON.stringify(current));previous=current;first=false;return}
+              for(const q of(data||[])){
+                const old=previous[q.id];
+                if(!old){
+                  if(user.role!=='vendedor'){
+                    pushNoticeFor(user.id,'Nova cotação','Uma nova cotação foi enviada para Compras.');
+                    popup('Nova cotação','Uma nova cotação foi enviada para Compras.');
+                  }
+                }else if(old.status!==q.status){
+                  if(user.role==='vendedor'&&eventText[q.status]){
+                    pushNoticeFor(user.id,'Cotação atualizada',eventText[q.status]);
+                    popup('CotaFácil',eventText[q.status]);
+                  }else if(user.role!=='vendedor'&&q.status==='PEDIDO'){
+                    pushNoticeFor(user.id,'Pedido confirmado','Um vendedor confirmou o pedido de uma peça.');
+                    popup('Pedido confirmado','Pedido confirmado');
+                  }
+                }
+              }
+              localStorage.setItem(seenKey,JSON.stringify(current));
+              previous=current;
+              first=false;
+              load();
+            }
+            function pushNoticeFor(uid,title,message){
+              const storageKey=`cf_notifications_${uid}`;
+              let a=[];try{a=JSON.parse(localStorage.getItem(storageKey)||'[]')}catch{}
+              a.unshift({id:crypto.randomUUID(),title,message,read:false,at:new Date().toISOString()});
+              localStorage.setItem(storageKey,JSON.stringify(a.slice(0,50)));
+              if(uid===user.id)window.dispatchEvent(new Event('cf-notify'));
+            }
+            check();
+            const timer=setInterval(check,5000);
+            return()=>{window.removeEventListener('cf-notify',ev);clearInterval(timer)}
+          },[user.id,user.role]);
+          const unread=n.filter(x=>!x.read).length;
+          return <div style={{position:'relative'}}><button className="bell" onClick={()=>setOpen(!open)}><Bell size={20}/>{unread>0&&<i>{unread>9?'9+':unread}</i>}</button>{open&&<div className="notifPanel">{n.length===0?<p>Nenhuma notificação.</p>:n.slice(0,10).map(x=><div className={x.read?'notif read':'notif'} key={x.id}><b>{x.title}</b><span>{x.message}</span><small>{new Date(x.at).toLocaleString('pt-BR')}</small></div>)}<button className="ghost" onClick={()=>{const a=n.map(x=>({...x,read:true}));localStorage.setItem(key,JSON.stringify(a));setN(a)}}>Marcar como lidas</button></div>}</div>
+          }
+          '''
+          # Keep notification helper globally available; the component writes to user-scoped storage.
+          p.write_text(s[:start]+new+s[end:])
+          PY
+      - name: Add user-scoped pushNotice helper
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('client/src/main.jsx')
+          s=p.read_text()
+          s=s.replace("localStorage.getItem('cf_notifications')||'[]'", "localStorage.getItem('cf_notifications')||'[]'")
+          p.write_text(s)
+          PY
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add client/src/main.jsx
+          if git diff --cached --quiet; then echo "No changes"; exit 0; fi
+          git commit -m "Fix notifications polling and user isolation"
+          git push
