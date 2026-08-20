@@ -1,0 +1,41 @@
+name: Fix blank dashboard
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Restore missing saleValue helper
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('client/src/main.jsx')
+          s=p.read_text()
+          if 'const saleValue=' not in s:
+              marker='function Dashboard({user})'
+              helper="const saleValue=x=>{const candidates=[x.sold_value,x.sale_value,x.value_sold,x.cash,x.credit,x.cash_price,x.credit_price,x.price];const valid=candidates.map(v=>Number(v)).filter(v=>Number.isFinite(v)&&v>0);return valid.length?Math.max(...valid):0};"
+              if marker not in s:
+                  raise SystemExit('Dashboard marker not found')
+              s=s.replace(marker,helper+marker,1)
+              p.write_text(s)
+              print('saleValue helper restored')
+          else:
+              print('saleValue helper already exists')
+          PY
+      - name: Commit fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add client/src/main.jsx
+          if git diff --cached --quiet; then echo "No changes"; exit 0; fi
+          git commit -m "Fix blank dashboard runtime error"
+          git push
