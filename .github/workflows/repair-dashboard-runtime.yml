@@ -1,0 +1,38 @@
+name: Repair dashboard runtime error
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Insert missing saleValue helper
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('client/src/main.jsx')
+          s=p.read_text()
+          if 'const saleValue=' in s:
+              print('saleValue already present')
+              raise SystemExit(0)
+          needle="const money=v=>v==null?'—':new Intl.NumberFormat('pt-BR',{style:'currency',currency:'BRL'}).format(v);"
+          helper="const saleValue=x=>{const values=[x?.sold_value,x?.sale_value,x?.value_sold,x?.cash,x?.credit,x?.cash_price,x?.credit_price,x?.price].map(Number).filter(v=>Number.isFinite(v)&&v>0);return values.length?Math.max(...values):0};"
+          if needle not in s:
+              raise SystemExit('money helper not found')
+          s=s.replace(needle,needle+helper,1)
+          p.write_text(s)
+          PY
+      - name: Commit and push
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add client/src/main.jsx
+          git commit -m 'Fix dashboard blank screen runtime error' || exit 0
+          git push
