@@ -1,0 +1,70 @@
+name: Fix quote chat message sending
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Replace chat component
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          p=Path('client/src/main.jsx')
+          s=p.read_text()
+          pattern=r"function Chat\(\{quote,user,onClose\}\)\{.*?\nfunction Row"
+          replacement=r'''function Chat({quote,user,onClose}){
+          const[messages,setMessages]=useState([]),[text,setText]=useState(''),[sending,setSending]=useState(false),[loading,setLoading]=useState(true);
+          async function load(){
+            const{data,error}=await supabase.from('quote_messages').select('*,profiles(name)').eq('quote_id',quote.id).order('created_at',{ascending:true});
+            if(!error)setMessages(data||[]);
+            setLoading(false);
+          }
+          useEffect(()=>{
+            let mounted=true;
+            load();
+            const c=supabase.channel('quote-chat-'+quote.id).on('postgres_changes',{event:'INSERT',schema:'public',table:'quote_messages',filter:'quote_id=eq.'+quote.id},p=>{
+              if(!mounted)return;
+              setMessages(a=>a.some(x=>x.id===p.new.id)?a:[...a,p.new]);
+              if(p.new.user_id!==user.id){popup('Nova mensagem','Nova mensagem na cotação '+quote.code)}
+            }).subscribe();
+            return()=>{mounted=false;supabase.removeChannel(c)}
+          },[quote.id,user.id]);
+          async function send(e){
+            e.preventDefault();
+            const message=text.trim();
+            if(!message||sending)return;
+            setSending(true);
+            const{data:{user:authUser},error:authError}=await supabase.auth.getUser();
+            if(authError||!authUser){setSending(false);return alert('Sua sessão expirou. Saia e entre novamente no CotaFácil.')}
+            const payload={quote_id:quote.id,user_id:authUser.id,message};
+            const{data,error}=await supabase.from('quote_messages').insert(payload).select('*,profiles(name)').single();
+            setSending(false);
+            if(error){console.error('Erro ao enviar mensagem:',error);return alert('Não foi possível enviar a mensagem.\n\n'+(error.message||'Erro desconhecido'))}
+            if(data)setMessages(a=>a.some(x=>x.id===data.id)?a:[...a,data]);
+            setText('');
+          }
+          return <div className="cf-chat"><div className="cf-chat-head"><div><b><MessageCircle size={18}/> Chat da cotação</b><small>{quote.code} • {quote.brand}</small></div><button className="ghost" onClick={onClose}><X size={17}/></button></div><div className="cf-chat-messages">{loading?<div className="empty">Carregando mensagens...</div>:messages.length?messages.map(m=><div className={'cf-msg '+(m.user_id===user.id?'mine':'')} key={m.id}><b>{m.profiles?.name||(m.user_id===user.id?'Você':'Usuário')}</b><span>{m.message}</span><small>{new Date(m.created_at).toLocaleString('pt-BR')}</small></div>):<div className="empty">Nenhuma mensagem ainda.</div>}</div><form className="cf-chat-input" onSubmit={send}><input value={text} onChange={e=>setText(e.target.value)} placeholder="Digite sua mensagem..." autoFocus/><button type="submit" disabled={sending||!text.trim()}>{sending?'...':<Send size={17}/>}</button></form></div>}
+function Row'''
+          out,n=re.subn(pattern,replacement,s,count=1,flags=re.S)
+          if n!=1:
+              raise SystemExit('Chat component not found; no changes made')
+          p.write_text(out)
+          PY
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add client/src/main.jsx
+          if git diff --cached --quiet; then echo "No changes"; exit 0; fi
+          git commit -m "Fix sending messages in quote chat"
+          git push
