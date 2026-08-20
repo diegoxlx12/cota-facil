@@ -1,0 +1,60 @@
+name: Use database notifications
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Replace notification component
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          p=Path('client/src/main.jsx')
+          s=p.read_text()
+          start=s.index('function Notifications(')
+          end=s.index('function Dashboard(', start)
+          new=r'''function Notifications({user}){
+          const[n,setN]=useState([]),[open,setOpen]=useState(false);
+          const load=async()=>{
+            const{data,error}=await supabase.from('notifications').select('*').eq('user_id',user.id).order('created_at',{ascending:false}).limit(30);
+            if(!error)setN(data||[]);
+          };
+          useEffect(()=>{
+            let mounted=true;
+            load();
+            const channel=supabase.channel('notifications-'+user.id).on('postgres_changes',{event:'INSERT',schema:'public',table:'notifications',filter:'user_id=eq.'+user.id},payload=>{
+              if(!mounted)return;
+              const item=payload.new;
+              setN(a=>a.some(x=>x.id===item.id)?a:[item,...a].slice(0,30));
+              popup(item.title,item.message);
+            }).subscribe();
+            const timer=setInterval(load,5000);
+            const ev=()=>load();window.addEventListener('cf-notify',ev);
+            return()=>{mounted=false;clearInterval(timer);window.removeEventListener('cf-notify',ev);supabase.removeChannel(channel)};
+          },[user.id]);
+          const unread=n.filter(x=>!x.read).length;
+          async function markRead(id){await supabase.from('notifications').update({read:true}).eq('id',id).eq('user_id',user.id);setN(a=>a.map(x=>x.id===id?{...x,read:true}:x))}
+          async function markAll(){await supabase.from('notifications').update({read:true}).eq('user_id',user.id).eq('read',false);setN(a=>a.map(x=>({...x,read:true})))}
+          return <div style={{position:'relative'}}><button className="bell" onClick={()=>setOpen(!open)}><Bell size={20}/>{unread>0&&<i>{unread>9?'9+':unread}</i>}</button>{open&&<div className="notifPanel">{n.length===0?<p>Nenhuma notificação.</p>:n.slice(0,10).map(x=><button className={x.read?'notif read':'notif'} key={x.id} onClick={()=>!x.read&&markRead(x.id)}><b>{x.title}</b><span>{x.message}</span><small>{new Date(x.created_at).toLocaleString('pt-BR')}</small></button>)}{unread>0&&<button className="ghost" onClick={markAll}>Marcar todas como lidas</button>}</div>}</div>
+          }
+          '''
+          p.write_text(s[:start]+new+s[end:])
+          PY
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add client/src/main.jsx
+          if git diff --cached --quiet; then echo "No changes"; exit 0; fi
+          git commit -m "Fix notifications using Supabase database"
+          git push
