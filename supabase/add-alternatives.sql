@@ -2,5 +2,7 @@
 alter table public.quotes
 add column if not exists alternatives jsonb not null default '[]'::jsonb;
 
--- Atualiza o cache do PostgREST para a nova coluna ficar disponível na API.
+alter table public.quotes
+add column if not exists selected_alternative jsonb;
+
 notify pgrst, 'reload schema';
