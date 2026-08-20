@@ -1,0 +1,37 @@
+name: Fix dashboard sales value
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Fix dashboard value calculation
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('client/src/main.jsx')
+          s=p.read_text()
+          helper="""const saleValue=x=>{\n  const candidates=[x.sold_value,x.sale_value,x.value_sold,x.cash,x.credit,x.cash_price,x.credit_price,x.price];\n  const valid=candidates.map(v=>Number(v)).filter(v=>Number.isFinite(v)&&v>0);\n  return valid.length?Math.max(...valid):0;\n}\n"""
+          if 'const saleValue=' not in s:
+              marker='function Dashboard({user})'
+              s=s.replace(marker,helper+marker,1)
+          s=s.replace('Number(x.sold_value||0)','saleValue(x)')
+          p.write_text(s)
+          PY
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add client/src/main.jsx
+          if git diff --cached --quiet; then echo "No changes"; exit 0; fi
+          git commit -m "Fix total sold value in manager dashboard"
+          git push
