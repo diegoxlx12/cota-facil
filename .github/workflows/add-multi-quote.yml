@@ -1,0 +1,67 @@
+name: Add multiple quote items
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Update NewQuote
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          p=Path('client/src/main.jsx')
+          s=p.read_text()
+          start=s.index('function NewQuote(')
+          end=s.index('function Quotes(', start)
+          new=r'''function NewQuote({go,user}){
+          const[items,setItems]=useState([{code:'',brand:'',quantity:1,observation:''}]);
+          const[busy,setBusy]=useState(false);
+          function change(i,field,value){setItems(a=>a.map((x,n)=>n===i?{...x,[field]:value}:x))}
+          function addItem(){setItems(a=>[...a,{code:'',brand:'',quantity:1,observation:''}])}
+          function removeItem(i){if(items.length===1)return;setItems(a=>a.filter((_,n)=>n!==i))}
+          async function submit(e){
+            e.preventDefault();
+            if(items.some(x=>!x.code.trim()||!x.brand.trim()))return alert('Preencha o código e a marca de todas as peças.');
+            setBusy(true);
+            const payload=items.map(x=>({seller_id:user.id,code:x.code.trim(),brand:x.brand.trim(),quantity:Number(x.quantity)||1,seller_observation:x.observation.trim(),status:'AGUARDANDO_COTACAO'}));
+            const{data,error}=await supabase.from('quotes').insert(payload).select();
+            if(error){setBusy(false);return alert(error.message)}
+            if(data?.length){await supabase.from('quote_history').insert(data.map((q,i)=>({quote_id:q.id,user_id:user.id,action:'Cotação criada',details:`${q.code} • ${q.brand}`})))}
+            pushNotice('Cotações enviadas',`${items.length} peça(s) foram enviadas para Compras.`);
+            setBusy(false);go()
+          }
+          return <section className="narrow"><h1>Nova cotação</h1><p>Informe uma ou várias peças de uma vez.</p><form className="panel form" onSubmit={submit}>
+            {items.map((item,i)=><div className="panel" style={{marginBottom:12}} key={i}>
+              <div className="panelhead"><h3>Peça {i+1}</h3>{items.length>1&&<button type="button" className="danger small" onClick={()=>removeItem(i)}><Trash2 size={14}/> Remover</button>}</div>
+              <div className="twocol">
+                <label>Código *<input required value={item.code} onChange={e=>change(i,'code',e.target.value)}/></label>
+                <label>Marca *<input required value={item.brand} onChange={e=>change(i,'brand',e.target.value)}/></label>
+              </div>
+              <label>Quantidade<input type="number" min="1" value={item.quantity} onChange={e=>change(i,'quantity',Number(e.target.value))}/></label>
+              <label>Observação<textarea value={item.observation} onChange={e=>change(i,'observation',e.target.value)}/></label>
+            </div>)}
+            <button type="button" className="ghost" onClick={addItem}><PlusCircle size={16}/> Adicionar outra peça</button>
+            <div className="right"><button type="button" className="ghost" onClick={go}>Cancelar</button><button disabled={busy}>{busy?'Enviando...':`Enviar ${items.length} cotação${items.length>1?'ões':''}`}</button></div>
+          </form></section>
+          }
+          '''
+          p.write_text(s[:start]+new+s[end:])
+          PY
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add client/src/main.jsx
+          if git diff --cached --quiet; then echo "No changes"; exit 0; fi
+          git commit -m "Allow multiple parts in a single quotation"
+          git push
