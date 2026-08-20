@@ -1,0 +1,38 @@
+name: Fix blank screen now
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Restore missing saleValue function
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('client/src/main.jsx')
+          s=p.read_text()
+          if 'const saleValue=' not in s:
+              needle="const money=v=>v==null?'—':new Intl.NumberFormat('pt-BR',{style:'currency',currency:'BRL'}).format(v);"
+              helper="const saleValue=x=>{const candidates=[x?.sold_value,x?.sale_value,x?.value_sold,x?.cash,x?.credit,x?.cash_price,x?.credit_price,x?.price];const valid=candidates.map(Number).filter(v=>Number.isFinite(v)&&v>0);return valid.length?Math.max(...valid):0};"
+              if needle not in s:
+                  raise SystemExit('money declaration not found')
+              s=s.replace(needle,needle+helper,1)
+              p.write_text(s)
+          PY
+      - name: Commit fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add client/src/main.jsx
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "Fix runtime error causing blank screen"
+          git push
