@@ -1,8 +1,7 @@
 name: Repair dashboard runtime error
 
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
   workflow_dispatch:
 
 permissions:
